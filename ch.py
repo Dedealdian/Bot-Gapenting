@@ -54,17 +54,20 @@ def refresh_profile_list(message):
         kb.add(types.InlineKeyboardButton(f"📝 {name}", callback_data=safe_cb))
     kb.add(types.InlineKeyboardButton("➕ Buat Profile Baru", callback_data="set_buat"))
     kb.add(types.InlineKeyboardButton("🔙 Kembali", callback_data="m_start"))
-    
+
+    text = "<b>DAFTAR PROFILE</b>\nPilih profile atau buat baru:"
     try:
-        bot.edit_message_text("<b>DAFTAR PROFILE</b>\nPilih profile atau buat baru:", 
-                              message.chat.id, message.message_id, reply_markup=kb)
+        bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=kb)
     except:
-        bot.send_message(message.chat.id, "<b>DAFTAR PROFILE</b>\nPilih profile atau buat baru:", reply_markup=kb)
+        bot.send_message(message.chat.id, text, reply_markup=kb)
 
 # --- HANDLERS ---
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
-    kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("📋 Kelola Profile", callback_data="list_profile"))
+    kb = types.InlineKeyboardMarkup(row_width=1).add(
+        types.InlineKeyboardButton("📋 Kelola Profile", callback_data="list_profile"),
+        types.InlineKeyboardButton("📢 Broadcast All", callback_data="bc_all")
+    )
     bot.send_message(message.chat.id, "<b>CHANNEL MASTER PRO</b>", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -72,7 +75,6 @@ def cb_handler(call):
     uid = str(call.from_user.id)
     bot.answer_callback_query(call.id)
 
-    # Logika Pembatalan Universal
     if call.data == "cancel_all":
         bot.clear_step_handler_by_chat_id(chat_id=call.message.chat.id)
         user_state.pop(uid, None)
@@ -80,11 +82,17 @@ def cb_handler(call):
         return
 
     if call.data == "m_start":
-        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("📋 Kelola Profile", callback_data="list_profile"))
-        bot.edit_message_text("<b>CHANNEL MASTER PRO</b>", call.message.chat.id, call.message.message_id, reply_markup=kb)
+        cmd_start(call.message)
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except: pass
 
     elif call.data == "list_profile":
         refresh_profile_list(call.message)
+
+    elif call.data == "bc_all":
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 Batal", callback_data="m_start"))
+        msg = bot.send_message(call.message.chat.id, "📢 Kirim <b>Pesan</b> (Teks/Foto/Video) yang ingin di-broadcast ke SEMUA channel:", reply_markup=kb)
+        bot.register_next_step_handler(msg, step_broadcast)
 
     elif call.data == "set_buat":
         bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -109,7 +117,7 @@ def cb_handler(call):
         name = next((n for n in db["profiles"] if n.startswith(name_part)), name_part)
         p = db["profiles"].get(name)
         if not p: return
-        
+
         text = f"<b>DETAIL PROFILE:</b> <code>{name}</code>\n\n<b>Target:</b> <code>{p.get('target')}</code>"
         kb = types.InlineKeyboardMarkup(row_width=2).add(
             types.InlineKeyboardButton("🗑️ Hapus", callback_data=f"del:{name}"[:60]),
@@ -127,12 +135,11 @@ def cb_handler(call):
         save_db(db)
         refresh_profile_list(call.message)
 
-# --- FSM STEPS DENGAN NAVIGASI KEMBALI ---
+# --- FSM STEPS ---
 def step_name(message):
     uid = str(message.from_user.id)
     name = message.text.strip().replace(" ", "_")[:25]
     user_state[uid] = {"name": name}
-    
     kb = types.InlineKeyboardMarkup().row(
         types.InlineKeyboardButton("⏭️ Lewati", callback_data="skip_text"),
         types.InlineKeyboardButton("🔙 Batal", callback_data="cancel_all")
@@ -165,7 +172,7 @@ def ask_buttons(message, uid):
         types.InlineKeyboardButton("⏭️ Lewati", callback_data="skip_btn"),
         types.InlineKeyboardButton("🔙 Batal", callback_data="cancel_all")
     )
-    bot.send_message(message.chat.id, "Kirim <b>Format Tombol</b> atau klik Lewati:", reply_markup=kb)
+    bot.send_message(message.chat.id, "Kirim <b>Format Tombol</b> (Nama-Link) atau klik Lewati:", reply_markup=kb)
     bot.register_next_step_handler(message, step_btn)
 
 def step_btn(message):
@@ -175,24 +182,39 @@ def step_btn(message):
 
 def ask_target(message, uid):
     kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 Batal", callback_data="cancel_all"))
-    bot.send_message(message.chat.id, "Masukkan <b>ID Channel Target</b>:", reply_markup=kb)
+    bot.send_message(message.chat.id, "Masukkan <b>ID Channel Target</b>:\n<i>(Bisa masukkan banyak ID sekaligus dipisah spasi)</i>", reply_markup=kb)
     bot.register_next_step_handler(message, step_finish)
 
 def step_finish(message):
     uid = str(message.from_user.id)
-    target = message.text.strip()
+    raw_targets = message.text.strip().split()
     data = user_state.get(uid)
     if not data: return
+
+    for target in raw_targets:
+        # Buat nama unik per target
+        final_name = f"{data['name']}_{target.replace('-', '')}"
+        db["profiles"][final_name] = {
+            "text": data["text"], "media": data.get("media"),
+            "type": data.get("type"), "btns": data["btns"], "target": target
+        }
+        db["channel_links"][target] = final_name
     
-    db["profiles"][data["name"]] = {
-        "text": data["text"], "media": data.get("media"), 
-        "type": data.get("type"), "btns": data["btns"], "target": target
-    }
-    db["channel_links"][target] = data["name"]
     save_db(db)
     user_state.pop(uid, None)
-    bot.send_message(message.chat.id, "✅ Profile Aktif!", 
+    bot.send_message(message.chat.id, f"✅ {len(raw_targets)} Profile Aktif!",
                      reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 Kelola Profile", callback_data="list_profile")))
+
+# --- BROADCAST LOGIC ---
+def step_broadcast(message):
+    unique_channels = list(set(db["channel_links"].keys()))
+    success = 0
+    for cid in unique_channels:
+        try:
+            bot.copy_message(chat_id=cid, from_chat_id=message.chat.id, message_id=message.message_id)
+            success += 1
+        except: pass
+    bot.send_message(message.chat.id, f"🚀 <b>Broadcast Selesai!</b>\nBerhasil dikirim ke {success} channel.")
 
 # --- AUTOPOST LOGIC ---
 @bot.channel_post_handler(func=lambda m: True)
@@ -201,7 +223,7 @@ def handle_post(message):
     prof_name = db["channel_links"].get(cid)
     if not prof_name: return
     p = db["profiles"].get(prof_name)
-    
+
     kb = get_kb(p["btns"])
     orig = message.html_caption if (message.photo or message.video) else message.html_text
     orig = orig if orig else ""
